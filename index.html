@@ -5,6 +5,186 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>My Tracker</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBRAvSmPxMh2iyJTkcX6-1mCi64XemtpdE",
+  authDomain: "my-tracker-13538.firebaseapp.com",
+  projectId: "my-tracker-13538",
+  storageBucket: "my-tracker-13538.firebasestorage.app",
+  messagingSenderId: "632204794402",
+  appId: "1:632204794402:web:5b1706c7c3d4e732a4c87b"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+let currentUser = null;
+let saveTimeout = null;
+
+// ── AUTH STATE ────────────────────────────────────────────────────────────
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    currentUser = user;
+    document.getElementById('auth-screen').style.display = 'none';
+    document.getElementById('app-screen').style.display = 'block';
+    document.getElementById('user-email').textContent = user.email;
+    await loadFromFirebase();
+    refreshAll();
+  } else {
+    currentUser = null;
+    document.getElementById('auth-screen').style.display = 'flex';
+    document.getElementById('app-screen').style.display = 'none';
+  }
+});
+
+// ── FIREBASE SAVE/LOAD ────────────────────────────────────────────────────
+async function saveToFirebase() {
+  if (!currentUser) return;
+  try {
+    await setDoc(doc(db, 'users', currentUser.uid), {
+      state: JSON.stringify(window.appState),
+      currentYear: window.currentYear,
+      currentWeek: window.currentWeek,
+      activeDtKey: window.activeDtKey,
+      updatedAt: new Date().toISOString()
+    });
+    showToast('✅ Saved to cloud!');
+  } catch(e) {
+    showToast('❌ Save failed — check connection');
+  }
+}
+
+async function loadFromFirebase() {
+  if (!currentUser) return;
+  try {
+    const snap = await getDoc(doc(db, 'users', currentUser.uid));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data.state) {
+        const parsed = JSON.parse(data.state);
+        window.appState = parsed;
+        if (!window.appState.tasks) window.appState.tasks = {};
+        if (!window.appState.events) window.appState.events = {};
+        if (!window.appState.focus) window.appState.focus = {};
+      }
+      if (data.currentYear) window.currentYear = data.currentYear;
+      if (data.currentWeek) window.currentWeek = data.currentWeek;
+      if (data.activeDtKey) window.activeDtKey = data.activeDtKey;
+    }
+  } catch(e) {
+    console.log('Load error:', e);
+  }
+}
+
+// Auto-save with debounce
+window.triggerSave = function() {
+  clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(saveToFirebase, 2000);
+};
+
+// Manual save
+window.manualSave = async function() {
+  clearTimeout(saveTimeout);
+  await saveToFirebase();
+};
+
+// Sign in
+window.doSignIn = async function() {
+  const email = document.getElementById('auth-email').value.trim();
+  const pass = document.getElementById('auth-pass').value;
+  const err = document.getElementById('auth-error');
+  err.textContent = '';
+  try {
+    await signInWithEmailAndPassword(auth, email, pass);
+  } catch(e) {
+    if (e.code === 'auth/user-not-found' || e.code === 'auth/invalid-credential') {
+      err.textContent = 'Account not found. Register below first.';
+    } else if (e.code === 'auth/wrong-password') {
+      err.textContent = 'Incorrect password.';
+    } else {
+      err.textContent = e.message;
+    }
+  }
+};
+
+// Register
+window.doRegister = async function() {
+  const email = document.getElementById('auth-email').value.trim();
+  const pass = document.getElementById('auth-pass').value;
+  const err = document.getElementById('auth-error');
+  err.textContent = '';
+  if (pass.length < 6) { err.textContent = 'Password must be at least 6 characters.'; return; }
+  try {
+    await createUserWithEmailAndPassword(auth, email, pass);
+  } catch(e) {
+    if (e.code === 'auth/email-already-in-use') {
+      err.textContent = 'Account exists — use Sign In instead.';
+    } else {
+      err.textContent = e.message;
+    }
+  }
+};
+
+// Sign out
+window.doSignOut = async function() {
+  await signOut(auth);
+};
+
+// Export backup
+window.exportBackup = function() {
+  const data = {
+    exportedAt: new Date().toISOString(),
+    version: 'mytracker-v2',
+    state: window.appState,
+    currentYear: window.currentYear,
+    currentWeek: window.currentWeek,
+    activeDtKey: window.activeDtKey
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `my-tracker-backup-${new Date().toISOString().slice(0,10)}.json`;
+  a.click(); URL.revokeObjectURL(url);
+  showToast('⬇ Backup exported!');
+};
+
+// Import backup
+window.importBackup = function(e) {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async ev => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      if (!data.state) throw new Error('Invalid');
+      window.appState = data.state;
+      if (!window.appState.tasks) window.appState.tasks = {};
+      if (!window.appState.events) window.appState.events = {};
+      if (!window.appState.focus) window.appState.focus = {};
+      if (data.currentYear) window.currentYear = data.currentYear;
+      if (data.currentWeek) window.currentWeek = data.currentWeek;
+      if (data.activeDtKey) window.activeDtKey = data.activeDtKey;
+      await saveToFirebase();
+      buildWeekSelect(); refreshAll();
+      showToast('⬆ Backup imported!');
+    } catch(err) { showToast('❌ Invalid backup file'); }
+    e.target.value = '';
+  };
+  reader.readAsText(file);
+};
+
+function showToast(msg) {
+  const t = document.getElementById('save-toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+window.showToast = showToast;
+</script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 :root{
@@ -16,182 +196,213 @@
 html{scroll-behavior:smooth;}
 body{font-family:'DM Sans',sans-serif;background:var(--g8);color:var(--dark);min-height:100vh;}
 
-nav{position:sticky;top:0;z-index:100;background:var(--g1);display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:56px;box-shadow:0 2px 12px rgba(0,0,0,.25);}
+/* AUTH SCREEN */
+#auth-screen{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:100vh;background:linear-gradient(135deg,var(--g1),var(--g2),var(--g3));
+  padding:24px;
+}
+.auth-card{background:white;border-radius:24px;padding:40px 36px;width:100%;max-width:400px;box-shadow:var(--shadow-lg);}
+.auth-title{font-family:'DM Serif Display',serif;font-size:28px;color:var(--g1);margin-bottom:4px;}
+.auth-sub{font-size:13px;color:var(--muted);margin-bottom:28px;}
+.auth-field{width:100%;border:1.5px solid var(--g6);border-radius:10px;padding:12px 14px;font-size:14px;font-family:'DM Sans',sans-serif;outline:none;color:var(--dark);margin-bottom:12px;transition:border .2s;}
+.auth-field:focus{border-color:var(--g4);}
+.auth-btn{width:100%;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .2s;margin-bottom:8px;}
+.auth-btn.primary{background:var(--g2);color:white;}
+.auth-btn.primary:hover{background:var(--g1);}
+.auth-btn.secondary{background:var(--g7);color:var(--g2);}
+.auth-btn.secondary:hover{background:var(--g6);}
+.auth-error{font-size:12px;color:#c0392b;margin-bottom:8px;min-height:16px;}
+.auth-divider{text-align:center;font-size:12px;color:var(--muted);margin:8px 0;}
+
+/* APP SCREEN */
+#app-screen{display:none;}
+nav{position:sticky;top:0;z-index:100;background:var(--g1);display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:56px;box-shadow:0 2px 12px rgba(0,0,0,.25);}
 .nav-brand{font-family:'DM Serif Display',serif;font-size:18px;color:var(--white);}
 .nav-brand span{color:var(--g5);font-style:italic;}
-.nav-right{display:flex;align-items:center;gap:8px;}
-.nav-link{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:rgba(255,255,255,.65);text-decoration:none;padding:6px 12px;border-radius:20px;transition:all .2s;}
-.nav-link:hover,.nav-link.active{background:var(--g3);color:white;}
-.save-btn{background:var(--g4);color:white;border:none;border-radius:20px;padding:7px 16px;font-size:11px;font-weight:700;letter-spacing:.06em;cursor:pointer;font-family:'DM Sans',sans-serif;text-transform:uppercase;transition:all .2s;}
-.save-btn:hover{background:var(--g3);}
+.nav-right{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.nav-btn{background:rgba(255,255,255,.12);color:white;border:none;border-radius:16px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .2s;}
+.nav-btn:hover{background:rgba(255,255,255,.22);}
+.nav-btn.green{background:var(--g4);}
+.nav-btn.green:hover{background:var(--g3);}
+.user-badge{font-size:10px;color:rgba(255,255,255,.5);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .save-toast{position:fixed;bottom:24px;right:24px;background:var(--g1);color:white;border-radius:12px;padding:12px 20px;font-size:13px;font-weight:600;box-shadow:var(--shadow-lg);transform:translateY(80px);opacity:0;transition:all .3s ease;z-index:999;}
 .save-toast.show{transform:translateY(0);opacity:1;}
 
-.week-bar{background:var(--g2);padding:12px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
-.week-bar-label{font-size:12px;font-weight:600;color:rgba(255,255,255,.7);letter-spacing:.06em;text-transform:uppercase;}
-.wk-select{background:rgba(255,255,255,.12);color:white;border:1.5px solid rgba(255,255,255,.25);border-radius:8px;padding:6px 30px 6px 12px;font-size:13px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;outline:none;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;min-width:200px;}
+.week-bar{background:var(--g2);padding:10px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.week-bar-label{font-size:11px;font-weight:600;color:rgba(255,255,255,.7);letter-spacing:.06em;text-transform:uppercase;}
+.wk-select{background:rgba(255,255,255,.12);color:white;border:1.5px solid rgba(255,255,255,.25);border-radius:8px;padding:5px 28px 5px 10px;font-size:12px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;outline:none;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center;min-width:180px;}
 .wk-select option{background:#2d6a4f;color:white;}
-.week-nav{display:flex;gap:6px;}
-.wk-nav-btn{background:rgba(255,255,255,.12);color:white;border:1.5px solid rgba(255,255,255,.25);border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .2s;}
+.wk-nav-btn{background:rgba(255,255,255,.12);color:white;border:1.5px solid rgba(255,255,255,.25);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .2s;}
 .wk-nav-btn:hover{background:rgba(255,255,255,.22);}
-.wk-dates{font-size:12px;color:rgba(255,255,255,.6);font-style:italic;}
-.wk-today-btn{background:var(--g4);color:white;border:none;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .2s;margin-left:auto;}
-.wk-today-btn:hover{background:var(--g3);}
+.wk-dates{font-size:11px;color:rgba(255,255,255,.6);font-style:italic;}
+.wk-today-btn{background:var(--g4);color:white;border:none;border-radius:8px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;margin-left:auto;}
 
-.section{padding:36px 24px;max-width:1200px;margin:0 auto;}
-.section-divider{height:3px;background:linear-gradient(90deg,var(--g3),var(--g5),transparent);margin:0 24px;}
-.section-title{font-family:'DM Serif Display',serif;font-size:26px;color:var(--g1);margin-bottom:4px;}
-.section-sub{font-size:12px;color:var(--muted);margin-bottom:20px;}
+.section{padding:28px 16px;max-width:1200px;margin:0 auto;}
+.section-divider{height:3px;background:linear-gradient(90deg,var(--g3),var(--g5),transparent);margin:0 16px;}
+.section-title{font-family:'DM Serif Display',serif;font-size:24px;color:var(--g1);margin-bottom:4px;}
+.section-sub{font-size:12px;color:var(--muted);margin-bottom:18px;}
 
-.day-picker{display:flex;gap:6px;margin-bottom:20px;flex-wrap:wrap;align-items:center;}
-.day-pill{padding:6px 12px;border-radius:20px;border:2px solid var(--g6);background:white;color:var(--mid);font-size:11px;font-weight:600;cursor:pointer;transition:all .2s;font-family:'DM Sans',sans-serif;}
+.day-picker{display:flex;gap:5px;margin-bottom:18px;flex-wrap:wrap;align-items:center;}
+.day-pill{padding:5px 11px;border-radius:20px;border:2px solid var(--g6);background:white;color:var(--mid);font-size:11px;font-weight:600;cursor:pointer;transition:all .2s;font-family:'DM Sans',sans-serif;}
 .day-pill.active{background:var(--g2);border-color:var(--g2);color:white;}
 .day-pill.today-pill{border-color:var(--g4);color:var(--g3);}
 .day-pill.today-pill.active{background:var(--g2);color:white;}
 
-/* DAY TRACKER */
-.dt-wrap{display:grid;grid-template-columns:240px 1fr;gap:20px;align-items:start;}
+.dt-wrap{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start;}
 @media(max-width:700px){.dt-wrap{grid-template-columns:1fr;}}
-.donut-card{background:white;border-radius:20px;padding:24px;box-shadow:var(--shadow);display:flex;flex-direction:column;align-items:center;gap:14px;}
-.dt-day-hdr{background:linear-gradient(135deg,var(--g1),var(--g3));border-radius:12px;padding:14px 20px;width:100%;text-align:center;}
-.dt-day-name{font-family:'DM Serif Display',serif;font-size:22px;color:white;}
+.donut-card{background:white;border-radius:20px;padding:20px;box-shadow:var(--shadow);display:flex;flex-direction:column;align-items:center;gap:12px;}
+.dt-day-hdr{background:linear-gradient(135deg,var(--g1),var(--g3));border-radius:12px;padding:12px 16px;width:100%;text-align:center;}
+.dt-day-name{font-family:'DM Serif Display',serif;font-size:20px;color:white;}
 .dt-day-date{font-size:11px;color:rgba(255,255,255,.65);margin-top:2px;}
-.dt-week-badge{font-size:10px;color:rgba(255,255,255,.45);margin-top:3px;letter-spacing:.06em;}
-.donut-wrap{position:relative;width:170px;height:170px;}
+.dt-week-badge{font-size:9px;color:rgba(255,255,255,.45);margin-top:2px;}
+.donut-wrap{position:relative;width:160px;height:160px;}
 .donut-wrap svg{transform:rotate(-90deg);}
 .donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;}
-.donut-pct{font-family:'DM Serif Display',serif;font-size:36px;color:var(--g2);line-height:1;}
-.donut-lbl{font-size:10px;color:var(--muted);margin-top:2px;letter-spacing:.06em;}
-.dt-stats{display:flex;gap:18px;}
+.donut-pct{font-family:'DM Serif Display',serif;font-size:34px;color:var(--g2);line-height:1;}
+.donut-lbl{font-size:10px;color:var(--muted);margin-top:2px;}
+.dt-stats{display:flex;gap:16px;}
 .dt-stat{text-align:center;}
-.dt-stat-n{font-family:'DM Serif Display',serif;font-size:20px;color:var(--g2);}
-.dt-stat-l{font-size:9px;color:var(--muted);letter-spacing:.06em;}
+.dt-stat-n{font-family:'DM Serif Display',serif;font-size:18px;color:var(--g2);}
+.dt-stat-l{font-size:9px;color:var(--muted);}
 .dt-divider{width:1px;background:var(--g7);}
 
-.day-detail{display:flex;flex-direction:column;gap:12px;}
-.detail-card{background:white;border-radius:16px;overflow:hidden;box-shadow:var(--shadow);}
-.detail-card-hdr{background:linear-gradient(90deg,var(--g2),var(--g3));padding:10px 16px;display:flex;align-items:center;justify-content:space-between;}
+.day-detail{display:flex;flex-direction:column;gap:10px;}
+.detail-card{background:white;border-radius:14px;overflow:hidden;box-shadow:var(--shadow);}
+.detail-card-hdr{background:linear-gradient(90deg,var(--g2),var(--g3));padding:9px 14px;display:flex;align-items:center;justify-content:space-between;}
 .detail-card-hdr-lbl{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:white;}
-.focus-input-large{width:100%;border:none;outline:none;padding:14px 16px;font-size:14px;font-family:'DM Sans',sans-serif;color:var(--dark);background:transparent;}
+.focus-input-large{width:100%;border:none;outline:none;padding:12px 14px;font-size:13px;font-family:'DM Sans',sans-serif;color:var(--dark);background:transparent;}
 .focus-input-large::placeholder{color:var(--light);}
 
-/* EVENTS — same style as tasks */
-.event-item{display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--g8);}
+.event-item{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--g8);}
 .event-item:nth-child(odd){background:var(--g8);}
-.event-item:nth-child(even){background:white;}
-.event-desc-inp{flex:1;border:none;background:transparent;font-size:13px;color:var(--dark);font-family:'DM Sans',sans-serif;outline:none;font-weight:500;}
-.event-desc-inp::placeholder{color:var(--light);}
-.event-rm{background:none;border:none;cursor:pointer;color:var(--muted);font-size:15px;line-height:1;opacity:.45;transition:all .15s;padding:3px 5px;border-radius:4px;flex-shrink:0;}
-.event-rm:hover{opacity:1;background:#fde8e8;color:#c0392b;}
 .event-cb{width:18px;height:18px;border-radius:4px;border:2px solid var(--g5);background:white;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .18s;}
 .event-cb.checked{background:var(--g3);border-color:var(--g3);}
 .event-cb.checked::after{content:'✓';font-size:10px;color:white;font-weight:700;}
-.event-time-inp{width:76px;flex-shrink:0;border:1px solid var(--g6);border-radius:6px;padding:4px 6px;font-size:12px;font-family:'DM Sans',sans-serif;color:var(--mid);background:white;outline:none;text-align:center;}
+.event-time-inp{width:72px;flex-shrink:0;border:1px solid var(--g6);border-radius:6px;padding:3px 6px;font-size:11px;font-family:'DM Sans',sans-serif;color:var(--mid);background:white;outline:none;text-align:center;}
+.event-desc-inp{flex:1;border:none;background:transparent;font-size:12px;color:var(--dark);font-family:'DM Sans',sans-serif;outline:none;}
 .event-desc-inp.done-ev{text-decoration:line-through;color:var(--muted);}
-.empty-state{padding:20px 16px;text-align:center;color:var(--muted);font-size:13px;font-style:italic;}
+.event-desc-inp::placeholder{color:var(--light);}
+.event-rm{background:none;border:none;cursor:pointer;color:var(--muted);font-size:14px;opacity:.4;transition:all .15s;padding:2px 4px;border-radius:4px;}
+.event-rm:hover{opacity:1;background:#fde8e8;color:#c0392b;}
+.empty-state{padding:18px 14px;text-align:center;color:var(--muted);font-size:12px;font-style:italic;}
 
-/* TASKS */
-.tasks-card-hdr{background:linear-gradient(90deg,var(--g2),var(--g4));padding:12px 16px;display:flex;align-items:center;justify-content:space-between;}
+.tasks-card-hdr{background:linear-gradient(90deg,var(--g2),var(--g4));padding:11px 14px;display:flex;align-items:center;justify-content:space-between;}
 .tasks-card-title{font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:white;}
 .tasks-card-badge{background:rgba(255,255,255,.2);border-radius:20px;padding:2px 10px;font-size:11px;color:white;font-weight:600;}
-.task-item{display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--g8);}
+.task-item{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--g8);}
 .task-item:nth-child(odd){background:var(--g8);}
-.task-item:nth-child(even){background:white;}
-.task-cb{width:20px;height:20px;border-radius:5px;border:2px solid var(--g5);background:white;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .18s;}
-.task-cb.checked{background:var(--g3);border-color:var(--g3);box-shadow:0 1px 6px rgba(64,145,108,.35);}
-.task-cb.checked::after{content:'✓';font-size:11px;color:white;font-weight:700;}
-.task-input-field{flex:1;border:none;background:transparent;font-size:13px;color:var(--dark);font-family:'DM Sans',sans-serif;outline:none;font-weight:500;}
-.task-input-field.done-txt{text-decoration:line-through;color:var(--muted);font-weight:400;}
+.task-cb{width:18px;height:18px;border-radius:4px;border:2px solid var(--g5);background:white;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .18s;}
+.task-cb.checked{background:var(--g3);border-color:var(--g3);}
+.task-cb.checked::after{content:'✓';font-size:10px;color:white;font-weight:700;}
+.task-input-field{flex:1;border:none;background:transparent;font-size:12px;color:var(--dark);font-family:'DM Sans',sans-serif;outline:none;font-weight:500;}
+.task-input-field.done-txt{text-decoration:line-through;color:var(--muted);}
 .task-input-field::placeholder{color:var(--light);}
-.task-rm{background:none;border:none;cursor:pointer;color:var(--muted);font-size:15px;line-height:1;opacity:.45;transition:all .15s;padding:3px 5px;border-radius:4px;flex-shrink:0;}
+.task-rm{background:none;border:none;cursor:pointer;color:var(--muted);font-size:14px;opacity:.4;transition:all .15s;padding:2px 4px;border-radius:4px;}
 .task-rm:hover{opacity:1;background:#fde8e8;color:#c0392b;}
 
-/* shared add area */
-.add-area{padding:10px 16px;border-top:1px solid var(--g8);}
-.add-btn{width:100%;background:none;border:1.5px dashed var(--g6);border-radius:10px;padding:8px;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;}
+.add-area{padding:8px 14px;border-top:1px solid var(--g8);}
+.add-btn{width:100%;background:none;border:1.5px dashed var(--g6);border-radius:10px;padding:7px;color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;}
 .add-btn:hover{background:var(--g8);border-color:var(--g4);}
-.add-input-row{display:flex;gap:8px;align-items:center;}
-.add-input{flex:1;border:1.5px solid var(--g6);border-radius:8px;padding:7px 12px;font-size:13px;font-family:'DM Sans',sans-serif;outline:none;color:var(--dark);background:var(--g8);}
-.add-input-time{width:80px;flex-shrink:0;border:1.5px solid var(--g6);border-radius:8px;padding:7px 8px;font-size:13px;font-family:'DM Sans',sans-serif;outline:none;color:var(--dark);background:var(--g8);text-align:center;}
-.add-submit{background:var(--g3);color:white;border:none;border-radius:8px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;}
-.add-cancel{background:none;border:none;cursor:pointer;color:var(--muted);font-size:22px;}
+.add-input-row{display:flex;gap:6px;align-items:center;}
+.add-input{flex:1;border:1.5px solid var(--g6);border-radius:8px;padding:6px 10px;font-size:12px;font-family:'DM Sans',sans-serif;outline:none;color:var(--dark);background:var(--g8);}
+.add-input-time{width:72px;flex-shrink:0;border:1.5px solid var(--g6);border-radius:8px;padding:6px 6px;font-size:12px;font-family:'DM Sans',sans-serif;outline:none;color:var(--dark);background:var(--g8);text-align:center;}
+.add-submit{background:var(--g3);color:white;border:none;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;}
+.add-cancel{background:none;border:none;cursor:pointer;color:var(--muted);font-size:20px;}
 
 /* WEEKLY TRACKER */
-.planner-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;min-width:860px;}
-.planner-day{background:white;border-radius:14px;overflow:hidden;box-shadow:var(--shadow);}
+.week-grid-label{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--g2);margin-bottom:8px;padding:6px 10px;background:var(--g7);border-radius:6px;display:inline-block;}
+.planner-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;min-width:820px;}
+.planner-day{background:white;border-radius:12px;overflow:hidden;box-shadow:var(--shadow);}
 .planner-day.weekend{background:var(--g8);}
 .planner-day.is-today{box-shadow:0 0 0 2px var(--g4),var(--shadow);}
-.pd-header{padding:10px 8px 8px;background:var(--g2);text-align:center;}
+.pd-header{padding:8px 6px;background:var(--g2);text-align:center;}
 .planner-day.weekend .pd-header{background:var(--g3);}
 .planner-day.is-today .pd-header{background:var(--g1);}
-.pd-name{font-size:9px;font-weight:700;letter-spacing:.1em;color:rgba(255,255,255,.8);text-transform:uppercase;}
-.pd-date{font-size:12px;font-weight:700;color:white;margin-top:1px;}
-.pd-today-tag{font-size:8px;color:var(--g5);letter-spacing:.06em;margin-top:2px;}
-.pd-section-lbl{font-size:8px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:4px 8px;background:var(--g7);color:var(--g2);border-bottom:1px solid var(--g6);}
-.pd-focus{padding:5px 8px;border-bottom:1px solid var(--g7);}
-.pd-focus input{width:100%;border:none;outline:none;font-size:9px;color:var(--dark);font-family:'DM Sans',sans-serif;background:transparent;}
+.pd-name{font-size:8px;font-weight:700;letter-spacing:.1em;color:rgba(255,255,255,.8);text-transform:uppercase;}
+.pd-date{font-size:11px;font-weight:700;color:white;margin-top:1px;}
+.pd-today-tag{font-size:7px;color:var(--g5);margin-top:1px;}
+.pd-section-lbl{font-size:7px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:3px 6px;background:var(--g7);color:var(--g2);border-bottom:1px solid var(--g6);}
+.pd-focus{padding:4px 6px;border-bottom:1px solid var(--g7);}
+.pd-focus input{width:100%;border:none;outline:none;font-size:8px;color:var(--dark);font-family:'DM Sans',sans-serif;background:transparent;}
 .pd-focus input::placeholder{color:var(--light);}
-
-/* mini event rows in tracker */
-.pd-event-item{display:flex;align-items:center;gap:4px;padding:2px 6px 2px 8px;border-bottom:1px solid var(--g7);}
+.pd-event-item{display:flex;align-items:center;gap:3px;padding:2px 4px 2px 6px;border-bottom:1px solid var(--g7);}
 .pd-event-item:nth-child(odd){background:var(--g8);}
 .pd-event-item:nth-child(even){background:white;}
-.pd-event-time-lbl{font-size:7px;color:var(--muted);flex-shrink:0;min-width:38px;}
-.pd-event-desc{flex:1;font-size:8px;color:var(--dark);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.pd-ev-rm{background:none;border:none;cursor:pointer;color:var(--light);font-size:10px;opacity:.5;transition:all .15s;padding:1px 3px;flex-shrink:0;}
+.pd-ev-cb{width:9px;height:9px;border-radius:2px;border:1.5px solid var(--g5);background:white;cursor:pointer;flex-shrink:0;transition:all .15s;}
+.pd-ev-cb.checked{background:var(--g3);border-color:var(--g3);}
+.pd-event-time-lbl{font-size:6px;color:var(--muted);flex-shrink:0;min-width:30px;}
+.pd-event-desc{flex:1;font-size:7px;color:var(--dark);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pd-event-desc.done-ev{text-decoration:line-through;color:var(--muted);}
+.pd-ev-rm{background:none;border:none;cursor:pointer;color:var(--light);font-size:9px;opacity:.5;transition:all .15s;padding:1px 2px;}
 .pd-ev-rm:hover{opacity:1;color:#c0392b;}
-
-.pd-tasks-hdr{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:var(--g2);}
+.pd-tasks-hdr{display:flex;align-items:center;justify-content:space-between;padding:4px 6px;background:var(--g2);}
 .planner-day.weekend .pd-tasks-hdr{background:var(--g3);}
 .planner-day.is-today .pd-tasks-hdr{background:var(--g1);}
-.pd-tasks-lbl{font-size:8px;font-weight:700;letter-spacing:.1em;color:white;text-transform:uppercase;}
-.pd-tasks-pct{font-size:8px;font-weight:700;color:rgba(255,255,255,.9);}
-.pd-pbar-track{height:4px;background:rgba(255,255,255,.25);}
+.pd-tasks-lbl{font-size:7px;font-weight:700;letter-spacing:.1em;color:white;text-transform:uppercase;}
+.pd-tasks-pct{font-size:7px;font-weight:700;color:rgba(255,255,255,.9);}
+.pd-pbar-track{height:3px;background:rgba(255,255,255,.25);}
 .pd-pbar-fill{height:100%;background:white;opacity:.8;transition:width .3s ease;}
-.pd-task{display:flex;align-items:center;gap:4px;padding:3px 6px 3px 8px;border-bottom:1px solid var(--g7);}
+.pd-task{display:flex;align-items:center;gap:3px;padding:2px 4px 2px 6px;border-bottom:1px solid var(--g7);}
 .pd-task:nth-child(odd){background:var(--g8);}
 .pd-task:nth-child(even){background:white;}
-.pd-cb{width:11px;height:11px;border-radius:2px;border:1.5px solid var(--g5);background:white;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s;}
+.pd-cb{width:9px;height:9px;border-radius:2px;border:1.5px solid var(--g5);background:white;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s;}
 .pd-cb.checked{background:var(--g3);border-color:var(--g3);}
-.pd-cb.checked::after{content:'✓';font-size:7px;color:white;line-height:1;}
-.pd-task-inp{flex:1;border:none;outline:none;font-size:8px;color:var(--dark);font-family:'DM Sans',sans-serif;background:transparent;}
+.pd-cb.checked::after{content:'✓';font-size:6px;color:white;line-height:1;}
+.pd-task-inp{flex:1;border:none;outline:none;font-size:7px;color:var(--dark);font-family:'DM Sans',sans-serif;background:transparent;}
 .pd-task-inp.done-txt{text-decoration:line-through;color:var(--muted);}
 .pd-task-inp::placeholder{color:var(--light);}
-.pd-rm{background:none;border:none;cursor:pointer;color:var(--light);font-size:11px;opacity:.5;transition:all .15s;padding:1px 3px;border-radius:3px;flex-shrink:0;}
-.pd-rm:hover{opacity:1;background:#fde8e8;color:#c0392b;}
-.pd-add-row{padding:4px 8px;border-top:1px solid var(--g7);}
-.pd-add-btn{width:100%;background:none;border:1px dashed var(--g6);border-radius:6px;padding:3px;color:var(--muted);font-size:8px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;}
-.pd-add-btn:hover{background:var(--g8);border-color:var(--g4);}
-.pd-add-input-row{display:flex;gap:3px;align-items:center;}
-.pd-add-input{flex:1;border:1px solid var(--g6);border-radius:5px;padding:2px 5px;font-size:8px;font-family:'DM Sans',sans-serif;outline:none;color:var(--dark);background:var(--g8);}
-.pd-add-time{width:44px;border:1px solid var(--g6);border-radius:5px;padding:2px 4px;font-size:8px;font-family:'DM Sans',sans-serif;outline:none;color:var(--mid);background:var(--g8);text-align:center;}
-.pd-add-ok{background:var(--g3);color:white;border:none;border-radius:5px;padding:2px 7px;font-size:8px;font-weight:600;cursor:pointer;}
-.pd-add-x{background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;line-height:1;}
-.pd-footer{padding:4px 8px;background:var(--g7);text-align:right;font-size:8px;font-weight:700;color:var(--g2);}
-.pd-empty{padding:6px 8px;text-align:center;color:var(--light);font-size:8px;font-style:italic;}
+.pd-rm{background:none;border:none;cursor:pointer;color:var(--light);font-size:9px;opacity:.5;transition:all .15s;padding:1px 2px;}
+.pd-rm:hover{opacity:1;color:#c0392b;}
+.pd-add-row{padding:3px 6px;border-top:1px solid var(--g7);}
+.pd-add-btn{width:100%;background:none;border:1px dashed var(--g6);border-radius:5px;padding:2px;color:var(--muted);font-size:7px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;}
+.pd-add-btn:hover{background:var(--g8);}
+.pd-add-input-row{display:flex;gap:2px;align-items:center;}
+.pd-add-input{flex:1;border:1px solid var(--g6);border-radius:4px;padding:2px 4px;font-size:7px;font-family:'DM Sans',sans-serif;outline:none;color:var(--dark);background:var(--g8);}
+.pd-add-time{width:36px;border:1px solid var(--g6);border-radius:4px;padding:2px 3px;font-size:7px;font-family:'DM Sans',sans-serif;outline:none;color:var(--mid);background:var(--g8);text-align:center;}
+.pd-add-ok{background:var(--g3);color:white;border:none;border-radius:4px;padding:2px 5px;font-size:7px;font-weight:600;cursor:pointer;}
+.pd-add-x{background:none;border:none;cursor:pointer;color:var(--muted);font-size:11px;}
+.pd-footer{padding:3px 6px;background:var(--g7);text-align:right;font-size:7px;font-weight:700;color:var(--g2);}
+.pd-empty{padding:4px 6px;text-align:center;color:var(--light);font-size:7px;font-style:italic;}
 
-.week-grid-label{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--g2);margin-bottom:10px;padding:8px 12px;background:var(--g7);border-radius:8px;display:inline-block;}
-footer{background:var(--g1);color:rgba(255,255,255,.45);text-align:center;padding:20px;font-size:11px;margin-top:48px;}
+footer{background:var(--g1);color:rgba(255,255,255,.45);text-align:center;padding:16px;font-size:11px;margin-top:40px;}
 footer strong{color:var(--g5);}
+@media(max-width:500px){.nav-btn{padding:5px 8px;font-size:10px;}.nav-brand{font-size:15px;}}
 </style>
 </head>
 <body>
 
+<!-- AUTH SCREEN -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-title">My <span style="color:var(--g4);font-style:italic;">Tracker</span></div>
+    <div class="auth-sub">Sign in to sync your data across all devices</div>
+    <input class="auth-field" id="auth-email" type="email" placeholder="your@email.com"/>
+    <input class="auth-field" id="auth-pass" type="password" placeholder="Password (min 6 characters)"/>
+    <div class="auth-error" id="auth-error"></div>
+    <button class="auth-btn primary" onclick="doSignIn()">Sign In</button>
+    <div class="auth-divider">— First time? —</div>
+    <button class="auth-btn secondary" onclick="doRegister()">Create Account</button>
+  </div>
+</div>
+
+<!-- APP SCREEN -->
+<div id="app-screen">
 <nav>
   <div class="nav-brand">My <span>Tracker</span></div>
   <div class="nav-right">
-    <a class="nav-link" href="#daytracker">Day Tracker</a>
-    <a class="nav-link" href="#tracker">Weekly Tracker</a>
-    <button class="save-btn" id="export-btn">⬇ Export</button>
-    <label class="save-btn" id="import-label" style="cursor:pointer;">⬆ Import<input type="file" id="import-input" accept=".json" style="display:none"/></label>
-    <button class="save-btn" id="save-btn">💾 Save</button>
+    <span class="user-badge" id="user-email"></span>
+    <button class="nav-btn green" onclick="manualSave()">💾 Save</button>
+    <button class="nav-btn" onclick="exportBackup()">⬇ Export</button>
+    <label class="nav-btn" style="cursor:pointer;">⬆ Import<input type="file" accept=".json" onchange="importBackup(event)" style="display:none"/></label>
+    <button class="nav-btn" onclick="doSignOut()">Sign Out</button>
   </div>
 </nav>
 
 <div class="week-bar">
   <span class="week-bar-label">Week</span>
   <select class="wk-select" id="wk-select"></select>
-  <div class="week-nav">
+  <div style="display:flex;gap:4px;">
     <button class="wk-nav-btn" onclick="changeWeek(-1)">◀ Prev</button>
     <button class="wk-nav-btn" onclick="changeWeek(1)">Next ▶</button>
   </div>
@@ -199,7 +410,7 @@ footer strong{color:var(--g5);}
   <button class="wk-today-btn" onclick="goToToday()">Today</button>
 </div>
 
-<div class="save-toast" id="save-toast">✅ Progress saved!</div>
+<div class="save-toast" id="save-toast"></div>
 
 <!-- DAY TRACKER -->
 <div class="section" id="daytracker">
@@ -207,7 +418,6 @@ footer strong{color:var(--g5);}
   <div class="section-sub">Select a day to manage your focus, events and tasks.</div>
   <div class="day-picker" id="day-picker"></div>
   <div class="dt-wrap">
-    <!-- Donut -->
     <div class="donut-card">
       <div class="dt-day-hdr">
         <div class="dt-day-name" id="dt-dayname"></div>
@@ -215,11 +425,11 @@ footer strong{color:var(--g5);}
         <div class="dt-week-badge" id="dt-weekbadge"></div>
       </div>
       <div class="donut-wrap">
-        <svg width="170" height="170">
-          <circle cx="85" cy="85" r="72" fill="none" stroke="#d8f3dc" stroke-width="15"/>
-          <circle cx="85" cy="85" r="72" fill="none" stroke="#52b788" stroke-width="15"
+        <svg width="160" height="160">
+          <circle cx="80" cy="80" r="68" fill="none" stroke="#d8f3dc" stroke-width="14"/>
+          <circle cx="80" cy="80" r="68" fill="none" stroke="#52b788" stroke-width="14"
             stroke-linecap="round" id="donut-arc"
-            style="stroke-dasharray:0 452.4;transition:stroke-dasharray .5s cubic-bezier(.4,0,.2,1);"/>
+            style="stroke-dasharray:0 427.3;transition:stroke-dasharray .5s cubic-bezier(.4,0,.2,1);"/>
         </svg>
         <div class="donut-center">
           <span class="donut-pct" id="donut-pct">0%</span>
@@ -234,34 +444,27 @@ footer strong{color:var(--g5);}
         <div class="dt-stat"><div class="dt-stat-n" id="dt-total">0</div><div class="dt-stat-l">Total</div></div>
       </div>
     </div>
-
-    <!-- Detail panel -->
     <div class="day-detail">
-      <!-- Focus -->
       <div class="detail-card">
         <div class="detail-card-hdr"><span class="detail-card-hdr-lbl">Today's Focus</span></div>
         <input class="focus-input-large" id="dt-focus" placeholder="What's the main priority for today?"/>
       </div>
-
-      <!-- Events -->
       <div class="detail-card">
         <div class="detail-card-hdr">
           <span class="detail-card-hdr-lbl">Events</span>
-          <span id="dt-event-count" style="font-size:11px;color:rgba(255,255,255,.6);">0 events</span>
+          <span id="dt-event-count" style="font-size:10px;color:rgba(255,255,255,.6);">0 events</span>
         </div>
         <div id="dt-events-list"></div>
         <div class="add-area">
           <button class="add-btn" id="dt-ev-add-btn">+ Add Event</button>
           <div class="add-input-row" id="dt-ev-input-row" style="display:none">
-            <input class="add-input-time" id="dt-ev-time" placeholder="9:00 AM" value=""/>
+            <input class="add-input-time" id="dt-ev-time" placeholder="9:00 AM"/>
             <input class="add-input" id="dt-ev-desc" placeholder="Event description…"/>
             <button class="add-submit" id="dt-ev-submit">Add</button>
             <button class="add-cancel" id="dt-ev-cancel">×</button>
           </div>
         </div>
       </div>
-
-      <!-- Tasks -->
       <div class="detail-card">
         <div class="tasks-card-hdr">
           <span class="tasks-card-title">Tasks</span>
@@ -286,26 +489,27 @@ footer strong{color:var(--g5);}
 <!-- WEEKLY TRACKER -->
 <div class="section" id="tracker">
   <div class="section-title">Weekly Tracker</div>
-  <div class="section-sub">Current week and the week ahead — add events and tasks per day, synced with Day Tracker above.</div>
-
+  <div class="section-sub">Two weeks at a glance — add events and tasks per day, synced with Day Tracker above.</div>
   <div class="week-grid-label" id="wk-label-1"></div>
-  <div style="overflow-x:auto;padding-bottom:8px;margin-bottom:24px;">
+  <div style="overflow-x:auto;padding-bottom:6px;margin-bottom:20px;">
     <div class="planner-grid" id="planner-grid"></div>
   </div>
-
   <div class="week-grid-label" id="wk-label-2"></div>
-  <div style="overflow-x:auto;padding-bottom:8px;">
+  <div style="overflow-x:auto;padding-bottom:6px;">
     <div class="planner-grid" id="planner-grid-2"></div>
   </div>
 </div>
 
-<footer><strong>My Tracker</strong> · Wk 1–52 yearly planner · Hit 💾 to save progress</footer>
+<footer><strong>My Tracker</strong> · Cloud synced via Firebase · Wk 1–52</footer>
+</div>
 
 <script>
+// ── GLOBAL STATE ─────────────────────────────────────────────────────────
+window.appState = {tasks:{}, events:{}, focus:{}};
 const DNAMES=["MON","TUE","WED","THU","FRI","SAT","SUN"];
 const DFULL=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 const MSHT=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const CIRC=2*Math.PI*72;
+const CIRC=2*Math.PI*68;
 const todayDate=new Date(); todayDate.setHours(0,0,0,0);
 
 function getISOWeek(d){const date=new Date(d);date.setHours(0,0,0,0);date.setDate(date.getDate()+3-(date.getDay()+6)%7);const w1=new Date(date.getFullYear(),0,4);return 1+Math.round(((date-w1)/86400000-3+(w1.getDay()+6)%7)/7);}
@@ -316,189 +520,149 @@ function fmtFull(d){return `${d.getDate()} ${MSHT[d.getMonth()]} ${d.getFullYear
 function dateKey(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
 function isToday(d){return d.toDateString()===todayDate.toDateString();}
 function getWeekDays(yr,wk){const mon=getMondayOfWeek(yr,wk);return Array.from({length:7},(_,i)=>{const d=new Date(mon);d.setDate(mon.getDate()+i);return d;});}
+function getNextWeek(yr,wk){let wk2=wk+1;let yr2=yr;const max=getISOWeek(new Date(yr,11,28));if(wk2>max){yr2++;wk2=1;}return{yr2,wk2};}
 
-// STATE
-// state.tasks[dk] = [{id,label,done}]
-// state.events[dk] = [{id,time,desc}]
-// state.focus[dk] = ''
-let state={tasks:{},events:{},focus:{}};
 let nextId=1000;
-let currentYear=getISOYear(todayDate);
-let currentWeek=getISOWeek(todayDate);
-let activeDtKey=dateKey(todayDate);
+window.currentYear=getISOYear(todayDate);
+window.currentWeek=getISOWeek(todayDate);
+window.activeDtKey=dateKey(todayDate);
 
-function getTasksForDate(dk){if(!state.tasks[dk])state.tasks[dk]=[];return state.tasks[dk];}
-function getEventsForDate(dk){if(!state.events[dk])state.events[dk]=[];return state.events[dk];}
-function getFocusForDate(dk){return state.focus[dk]||'';}
-function setFocusForDate(dk,v){state.focus[dk]=v;}
-
-// SAVE/LOAD
-function saveState(){try{localStorage.setItem('twb_v5',JSON.stringify({state,currentYear,currentWeek,activeDtKey}));}catch(e){}}
-function loadState(){try{const s=localStorage.getItem('twb_v5');if(s){const p=JSON.parse(s);state=p.state||{tasks:{},events:{},focus:{}};if(!state.tasks)state.tasks={};if(!state.events)state.events={};if(!state.focus)state.focus={};currentYear=p.currentYear||currentYear;currentWeek=p.currentWeek||currentWeek;activeDtKey=p.activeDtKey||activeDtKey;}}catch(e){}}
-
-// save-btn wired at bottom
+function getTasksForDate(dk){if(!window.appState.tasks[dk])window.appState.tasks[dk]=[];return window.appState.tasks[dk];}
+function getEventsForDate(dk){if(!window.appState.events[dk])window.appState.events[dk]=[];return window.appState.events[dk];}
+function getFocusForDate(dk){return window.appState.focus[dk]||'';}
+function setFocusForDate(dk,v){window.appState.focus[dk]=v;}
 
 // WEEK SELECT
 function buildWeekSelect(){
   const sel=document.getElementById('wk-select');sel.innerHTML='';
-  const maxWk=getISOWeek(new Date(currentYear,11,28));
+  const maxWk=getISOWeek(new Date(window.currentYear,11,28));
   for(let w=1;w<=maxWk;w++){
-    const mon=getMondayOfWeek(currentYear,w);const sun=new Date(mon);sun.setDate(mon.getDate()+6);
+    const mon=getMondayOfWeek(window.currentYear,w);const sun=new Date(mon);sun.setDate(mon.getDate()+6);
     const opt=document.createElement('option');opt.value=w;
     opt.textContent=`Wk ${w}  ·  ${fmtShort(mon)} – ${fmtShort(sun)}`;
-    if(w===currentWeek)opt.selected=true;sel.appendChild(opt);
+    if(w===window.currentWeek)opt.selected=true;sel.appendChild(opt);
   }
-  sel.onchange=()=>{currentWeek=parseInt(sel.value);refreshAll();};
+  sel.onchange=()=>{window.currentWeek=parseInt(sel.value);refreshAll();};
   updateWeekLabel();
 }
-function updateWeekLabel(){const days=getWeekDays(currentYear,currentWeek);document.getElementById('wk-dates').textContent=`${fmtShort(days[0])} – ${fmtShort(days[6])}, ${days[6].getFullYear()}`;}
+function updateWeekLabel(){const days=getWeekDays(window.currentYear,window.currentWeek);document.getElementById('wk-dates').textContent=`${fmtShort(days[0])} – ${fmtShort(days[6])}, ${days[6].getFullYear()}`;}
 function changeWeek(d){
-  currentWeek+=d;const maxWk=getISOWeek(new Date(currentYear,11,28));
-  if(currentWeek<1){currentYear--;currentWeek=getISOWeek(new Date(currentYear,11,28));buildWeekSelect();}
-  else if(currentWeek>maxWk){currentYear++;currentWeek=1;buildWeekSelect();}
-  else document.getElementById('wk-select').value=currentWeek;
+  window.currentWeek+=d;const maxWk=getISOWeek(new Date(window.currentYear,11,28));
+  if(window.currentWeek<1){window.currentYear--;window.currentWeek=getISOWeek(new Date(window.currentYear,11,28));buildWeekSelect();}
+  else if(window.currentWeek>maxWk){window.currentYear++;window.currentWeek=1;buildWeekSelect();}
+  else document.getElementById('wk-select').value=window.currentWeek;
   refreshAll();
 }
-function goToToday(){currentYear=getISOYear(todayDate);currentWeek=getISOWeek(todayDate);activeDtKey=dateKey(todayDate);buildWeekSelect();refreshAll();}
+function goToToday(){window.currentYear=getISOYear(todayDate);window.currentWeek=getISOWeek(todayDate);window.activeDtKey=dateKey(todayDate);buildWeekSelect();refreshAll();}
 
-// DAY PICKER
+// DAY PICKER — 14 days
 function buildDayPicker(){
   const picker=document.getElementById('day-picker');picker.innerHTML='';
-
-  // Current week
-  const days1=getWeekDays(currentYear,currentWeek);
-  // Next week
-  let yr2=currentYear,wk2=currentWeek+1;
-  const maxWk=getISOWeek(new Date(yr2,11,28));
-  if(wk2>maxWk){yr2++;wk2=1;}
+  const days1=getWeekDays(window.currentYear,window.currentWeek);
+  const {yr2,wk2}=getNextWeek(window.currentYear,window.currentWeek);
   const days2=getWeekDays(yr2,wk2);
   const allDays=[...days1,...days2];
-
-  // Week separator label helper
   let lastWk=null;
   allDays.forEach((day,idx)=>{
     const di=idx%7;
-    const wkNum=idx<7?currentWeek:wk2;
-    // Add subtle week label pill before each week
+    const wkNum=idx<7?window.currentWeek:wk2;
     if(wkNum!==lastWk){
       const sep=document.createElement('span');
-      sep.style.cssText='font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;align-self:center;padding:0 4px;';
-      sep.textContent=`Wk ${wkNum}`;
-      picker.appendChild(sep);
-      lastWk=wkNum;
+      sep.style.cssText='font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;align-self:center;padding:0 2px;';
+      sep.textContent=`Wk ${wkNum}`;picker.appendChild(sep);lastWk=wkNum;
     }
     const dk=dateKey(day),itd=isToday(day);
     const pill=document.createElement('button');
-    pill.className='day-pill'+(itd?' today-pill':'')+(dk===activeDtKey?' active':'');
+    pill.className='day-pill'+(itd?' today-pill':'')+(dk===window.activeDtKey?' active':'');
     pill.textContent=`${DNAMES[di]} ${day.getDate()}${itd?' · Today':''}`;
     pill.id=`pill-${dk}`;pill.onclick=()=>selectDtDay(dk,day,di);
     picker.appendChild(pill);
   });
-
   const allKeys=allDays.map(d=>dateKey(d));
-  if(!allKeys.includes(activeDtKey)){
+  if(!allKeys.includes(window.activeDtKey)){
     const td=allDays.find(d=>isToday(d))||allDays[0];
-    activeDtKey=dateKey(td);
-    const idx=allDays.indexOf(td);
-    selectDtDay(activeDtKey,td,idx%7);
+    window.activeDtKey=dateKey(td);selectDtDay(window.activeDtKey,td,allDays.indexOf(td)%7);
   } else {
-    const idx=allKeys.indexOf(activeDtKey);
-    selectDtDay(activeDtKey,allDays[idx],idx%7);
+    const idx=allKeys.indexOf(window.activeDtKey);selectDtDay(window.activeDtKey,allDays[idx],idx%7);
   }
 }
 
 function selectDtDay(dk,day,di){
-  activeDtKey=dk;
+  window.activeDtKey=dk;
   document.querySelectorAll('.day-pill').forEach(p=>p.classList.remove('active'));
   const pill=document.getElementById(`pill-${dk}`);if(pill)pill.classList.add('active');
   document.getElementById('dt-dayname').textContent=DFULL[di];
   document.getElementById('dt-daydate').textContent=fmtFull(day);
-  document.getElementById('dt-weekbadge').textContent=`Wk ${currentWeek} · ${currentYear}`;
+  document.getElementById('dt-weekbadge').textContent=`Wk ${getISOWeek(day)} · ${day.getFullYear()}`;
   renderDtFocus();renderDtEvents();renderDtTasks();
 }
 
 // FOCUS
 function renderDtFocus(){
   const inp=document.getElementById('dt-focus');
-  inp.value=getFocusForDate(activeDtKey);
+  inp.value=getFocusForDate(window.activeDtKey);
   inp.oninput=e=>{
-    setFocusForDate(activeDtKey,e.target.value);
-    const pcol=document.getElementById(`pcol-${activeDtKey}`);
+    setFocusForDate(window.activeDtKey,e.target.value);
+    const pcol=document.getElementById(`pcol-${window.activeDtKey}`);
     if(pcol){const fi=pcol.querySelector('.focus-inp');if(fi)fi.value=e.target.value;}
+    window.triggerSave&&window.triggerSave();
   };
 }
 
-// EVENTS — Day Tracker
+// EVENTS
 function renderDtEvents(){
-  const events=getEventsForDate(activeDtKey);
+  const events=getEventsForDate(window.activeDtKey);
   const list=document.getElementById('dt-events-list');list.innerHTML='';
-  const countEl=document.getElementById('dt-event-count');
-  countEl.textContent=events.length===0?'0 events':`${events.length} event${events.length>1?'s':''}`;
+  document.getElementById('dt-event-count').textContent=events.length===0?'0 events':`${events.length} event${events.length>1?'s':''}`;
   if(events.length===0){list.innerHTML='<div class="empty-state">No events — add one below ↓</div>';return;}
   events.forEach((ev,ei)=>{
     const row=document.createElement('div');row.className='event-item';
     const cb=document.createElement('div');cb.className='event-cb'+(ev.done?' checked':'');
-    cb.onclick=()=>{ev.done=!ev.done;cb.classList.toggle('checked',ev.done);descInp.classList.toggle('done-ev',ev.done);syncPlannerEvents(activeDtKey);};
-    const timeInp=document.createElement('input');timeInp.className='event-time-inp';
-    timeInp.value=ev.time;timeInp.placeholder='time';
-    timeInp.oninput=e=>{ev.time=e.target.value;syncPlannerEvents(activeDtKey);};
-    const descInp=document.createElement('input');descInp.className='event-desc-inp'+(ev.done?' done-ev':'');
-    descInp.value=ev.desc;descInp.placeholder='event description…';
-    descInp.oninput=e=>{ev.desc=e.target.value;syncPlannerEvents(activeDtKey);};
-    const rm=document.createElement('button');rm.className='event-rm';rm.innerHTML='🗑';rm.title='Delete event';
-    rm.onclick=()=>{events.splice(ei,1);renderDtEvents();syncPlannerEvents(activeDtKey);};
-    row.appendChild(cb);row.appendChild(timeInp);row.appendChild(descInp);row.appendChild(rm);
-    list.appendChild(row);
+    cb.onclick=()=>{ev.done=!ev.done;cb.classList.toggle('checked',ev.done);descInp.classList.toggle('done-ev',ev.done);syncPlannerEvents(window.activeDtKey);window.triggerSave&&window.triggerSave();};
+    const timeInp=document.createElement('input');timeInp.className='event-time-inp';timeInp.value=ev.time;timeInp.placeholder='time';
+    timeInp.oninput=e=>{ev.time=e.target.value;syncPlannerEvents(window.activeDtKey);window.triggerSave&&window.triggerSave();};
+    const descInp=document.createElement('input');descInp.className='event-desc-inp'+(ev.done?' done-ev':'');descInp.value=ev.desc;descInp.placeholder='event…';
+    descInp.oninput=e=>{ev.desc=e.target.value;syncPlannerEvents(window.activeDtKey);window.triggerSave&&window.triggerSave();};
+    const rm=document.createElement('button');rm.className='event-rm';rm.innerHTML='🗑';
+    rm.onclick=()=>{events.splice(ei,1);renderDtEvents();syncPlannerEvents(window.activeDtKey);window.triggerSave&&window.triggerSave();};
+    row.appendChild(cb);row.appendChild(timeInp);row.appendChild(descInp);row.appendChild(rm);list.appendChild(row);
   });
 }
 
-// Add event wiring
-document.getElementById('dt-ev-add-btn').onclick=()=>{
-  document.getElementById('dt-ev-add-btn').style.display='none';
-  document.getElementById('dt-ev-input-row').style.display='flex';
-  document.getElementById('dt-ev-time').focus();
-};
-document.getElementById('dt-ev-cancel').onclick=()=>{
-  document.getElementById('dt-ev-add-btn').style.display='';
-  document.getElementById('dt-ev-input-row').style.display='none';
-  document.getElementById('dt-ev-time').value='';document.getElementById('dt-ev-desc').value='';
-};
+document.getElementById('dt-ev-add-btn').onclick=()=>{document.getElementById('dt-ev-add-btn').style.display='none';document.getElementById('dt-ev-input-row').style.display='flex';document.getElementById('dt-ev-time').focus();};
+document.getElementById('dt-ev-cancel').onclick=()=>{document.getElementById('dt-ev-add-btn').style.display='';document.getElementById('dt-ev-input-row').style.display='none';document.getElementById('dt-ev-time').value='';document.getElementById('dt-ev-desc').value='';};
 function addDtEvent(){
   const time=document.getElementById('dt-ev-time').value.trim();
-  const desc=document.getElementById('dt-ev-desc').value.trim();
-  if(!desc)return;
-  getEventsForDate(activeDtKey).push({id:`e${nextId++}`,time:time||'',desc,done:false});
+  const desc=document.getElementById('dt-ev-desc').value.trim();if(!desc)return;
+  getEventsForDate(window.activeDtKey).push({id:`e${nextId++}`,time:time||'',desc,done:false});
   document.getElementById('dt-ev-time').value='';document.getElementById('dt-ev-desc').value='';
-  document.getElementById('dt-ev-add-btn').style.display='';
-  document.getElementById('dt-ev-input-row').style.display='none';
-  renderDtEvents();syncPlannerEvents(activeDtKey);
+  document.getElementById('dt-ev-add-btn').style.display='';document.getElementById('dt-ev-input-row').style.display='none';
+  renderDtEvents();syncPlannerEvents(window.activeDtKey);window.triggerSave&&window.triggerSave();
 }
 document.getElementById('dt-ev-submit').onclick=addDtEvent;
 document.getElementById('dt-ev-desc').onkeydown=e=>{if(e.key==='Enter')addDtEvent();if(e.key==='Escape')document.getElementById('dt-ev-cancel').click();};
 document.getElementById('dt-ev-time').onkeydown=e=>{if(e.key==='Enter')document.getElementById('dt-ev-desc').focus();};
 
-// TASKS — Day Tracker
+// TASKS
 function renderDtTasks(){
   const list=document.getElementById('dt-task-list');list.innerHTML='';
-  const tasks=getTasksForDate(activeDtKey);
+  const tasks=getTasksForDate(window.activeDtKey);
   if(tasks.length===0){list.innerHTML='<div class="empty-state">No tasks yet — add one below ↓</div>';updateDonut();return;}
   tasks.forEach((task,ti)=>{
     const row=document.createElement('div');row.className='task-item';
     const cb=document.createElement('div');cb.className='task-cb'+(task.done?' checked':'');
-    const inp=document.createElement('input');
-    inp.className='task-input-field'+(task.done?' done-txt':'');
-    inp.value=task.label;inp.placeholder='task name…';
-    const rm=document.createElement('button');rm.className='task-rm';rm.innerHTML='🗑';rm.title='Delete';
-    cb.onclick=()=>{task.done=!task.done;cb.classList.toggle('checked',task.done);inp.classList.toggle('done-txt',task.done);updateDonut();syncPlannerTaskCell(activeDtKey,ti,'done',task.done);};
-    inp.addEventListener('input',e=>{task.label=e.target.value;syncPlannerTaskCell(activeDtKey,ti,'label',e.target.value);});
-    rm.onclick=()=>{tasks.splice(ti,1);renderDtTasks();updateDonut();renderPlannerTasks(activeDtKey);};
+    const inp=document.createElement('input');inp.className='task-input-field'+(task.done?' done-txt':'');inp.value=task.label;inp.placeholder='task…';
+    const rm=document.createElement('button');rm.className='task-rm';rm.innerHTML='🗑';
+    cb.onclick=()=>{task.done=!task.done;cb.classList.toggle('checked',task.done);inp.classList.toggle('done-txt',task.done);updateDonut();syncPlannerTaskCell(window.activeDtKey,ti,'done',task.done);window.triggerSave&&window.triggerSave();};
+    inp.addEventListener('input',e=>{task.label=e.target.value;syncPlannerTaskCell(window.activeDtKey,ti,'label',e.target.value);window.triggerSave&&window.triggerSave();});
+    rm.onclick=()=>{tasks.splice(ti,1);renderDtTasks();updateDonut();renderPlannerTasks(window.activeDtKey);window.triggerSave&&window.triggerSave();};
     row.appendChild(cb);row.appendChild(inp);row.appendChild(rm);list.appendChild(row);
   });
   updateDonut();
 }
 
 function updateDonut(){
-  const tasks=getTasksForDate(activeDtKey);
+  const tasks=getTasksForDate(window.activeDtKey);
   const done=tasks.filter(t=>t.done).length,total=tasks.length;
   const pct=total?Math.round(done/total*100):0;
   document.getElementById('donut-arc').style.strokeDasharray=`${(pct/100)*CIRC} ${CIRC}`;
@@ -513,34 +677,26 @@ document.getElementById('dt-add-btn').onclick=()=>{document.getElementById('dt-a
 document.getElementById('dt-add-cancel').onclick=()=>{document.getElementById('dt-add-btn').style.display='';document.getElementById('dt-input-row').style.display='none';document.getElementById('dt-new-input').value='';};
 function addDtTask(){
   const val=document.getElementById('dt-new-input').value.trim();if(!val)return;
-  getTasksForDate(activeDtKey).push({id:`t${nextId++}`,label:val,done:false});
+  getTasksForDate(window.activeDtKey).push({id:`t${nextId++}`,label:val,done:false});
   document.getElementById('dt-new-input').value='';
   document.getElementById('dt-add-btn').style.display='';document.getElementById('dt-input-row').style.display='none';
-  renderDtTasks();renderPlannerTasks(activeDtKey);
+  renderDtTasks();renderPlannerTasks(window.activeDtKey);window.triggerSave&&window.triggerSave();
 }
 document.getElementById('dt-add-submit').onclick=addDtTask;
 document.getElementById('dt-new-input').onkeydown=e=>{if(e.key==='Enter')addDtTask();if(e.key==='Escape')document.getElementById('dt-add-cancel').click();};
 
 // WEEKLY TRACKER
 function buildPlannerGrid(){
-  // Week 1 label
-  const days1=getWeekDays(currentYear,currentWeek);
-  const lbl1=document.getElementById('wk-label-1');
-  if(lbl1)lbl1.textContent=`Wk ${currentWeek}  ·  ${fmtShort(days1[0])} – ${fmtShort(days1[6])}`;
-
-  // Week 2 (next week)
-  let yr2=currentYear,wk2=currentWeek+1;
-  const maxWk=getISOWeek(new Date(yr2,11,28));
-  if(wk2>maxWk){yr2++;wk2=1;}
+  const days1=getWeekDays(window.currentYear,window.currentWeek);
+  const {yr2,wk2}=getNextWeek(window.currentYear,window.currentWeek);
   const days2=getWeekDays(yr2,wk2);
-  const lbl2=document.getElementById('wk-label-2');
-  if(lbl2)lbl2.textContent=`Wk ${wk2}  ·  ${fmtShort(days2[0])} – ${fmtShort(days2[6])}`;
-
-  buildPlannerWeek('planner-grid', getWeekDays(currentYear,currentWeek));
-  buildPlannerWeek('planner-grid-2', days2);
+  const lbl1=document.getElementById('wk-label-1');if(lbl1)lbl1.textContent=`Wk ${window.currentWeek}  ·  ${fmtShort(days1[0])} – ${fmtShort(days1[6])}`;
+  const lbl2=document.getElementById('wk-label-2');if(lbl2)lbl2.textContent=`Wk ${wk2}  ·  ${fmtShort(days2[0])} – ${fmtShort(days2[6])}`;
+  buildPlannerWeek('planner-grid',days1);
+  buildPlannerWeek('planner-grid-2',days2);
 }
 
-function buildPlannerWeek(gridId, weekDays){
+function buildPlannerWeek(gridId,weekDays){
   const grid=document.getElementById(gridId);grid.innerHTML='';
   weekDays.forEach((day,di)=>{
     const dk=dateKey(day),isWE=di>=5,itd=isToday(day);
@@ -553,7 +709,7 @@ function buildPlannerWeek(gridId, weekDays){
         ${itd?'<div class="pd-today-tag">TODAY</div>':''}
       </div>
       <div class="pd-section-lbl">Focus</div>
-      <div class="pd-focus"><input class="focus-inp" data-dk="${dk}" value="${getFocusForDate(dk)}" placeholder="main focus…"/></div>
+      <div class="pd-focus"><input class="focus-inp" data-dk="${dk}" value="${getFocusForDate(dk)}" placeholder="focus…"/></div>
       <div class="pd-section-lbl">Events</div>
       <div id="pd-ev-${dk}"></div>
       <div class="pd-add-row">
@@ -579,47 +735,30 @@ function buildPlannerWeek(gridId, weekDays){
       <div class="pd-footer" id="pdfooter-${dk}">0.0%</div>`;
     grid.appendChild(col);
 
-    // Focus sync planner → DT
     col.querySelector('.focus-inp').addEventListener('input',e=>{
       setFocusForDate(dk,e.target.value);
-      if(dk===activeDtKey){const fi=document.getElementById('dt-focus');if(fi)fi.value=e.target.value;}
+      if(dk===window.activeDtKey){const fi=document.getElementById('dt-focus');if(fi)fi.value=e.target.value;}
+      window.triggerSave&&window.triggerSave();
     });
-
-    // Event add btn wiring
-    document.getElementById(`pd-ev-add-btn-${dk}`).onclick=()=>{
-      document.getElementById(`pd-ev-add-btn-${dk}`).style.display='none';
-      document.getElementById(`pd-ev-add-row-${dk}`).style.display='flex';
-      document.getElementById(`pd-ev-t-${dk}`).focus();
-    };
+    document.getElementById(`pd-ev-add-btn-${dk}`).onclick=()=>{document.getElementById(`pd-ev-add-btn-${dk}`).style.display='none';document.getElementById(`pd-ev-add-row-${dk}`).style.display='flex';document.getElementById(`pd-ev-t-${dk}`).focus();};
     document.getElementById(`pd-ev-t-${dk}`).onkeydown=e=>{if(e.key==='Enter')document.getElementById(`pd-ev-d-${dk}`).focus();};
     document.getElementById(`pd-ev-d-${dk}`).onkeydown=e=>{if(e.key==='Enter')addPlannerEvent(dk);if(e.key==='Escape')cancelPlannerEvAdd(dk);};
-
-    // Task add btn wiring
-    document.getElementById(`pd-add-btn-${dk}`).onclick=()=>{
-      document.getElementById(`pd-add-btn-${dk}`).style.display='none';
-      document.getElementById(`pd-add-row-${dk}`).style.display='flex';
-      document.getElementById(`pd-add-inp-${dk}`).focus();
-    };
+    document.getElementById(`pd-add-btn-${dk}`).onclick=()=>{document.getElementById(`pd-add-btn-${dk}`).style.display='none';document.getElementById(`pd-add-row-${dk}`).style.display='flex';document.getElementById(`pd-add-inp-${dk}`).focus();};
     document.getElementById(`pd-add-inp-${dk}`).onkeydown=e=>{if(e.key==='Enter')addPlannerTask(dk);if(e.key==='Escape')cancelPlannerAdd(dk);};
-
-    renderPlannerEvents(dk);
-    renderPlannerTasks(dk);
+    renderPlannerEvents(dk);renderPlannerTasks(dk);
   });
 }
 
-// Planner events
 function addPlannerEvent(dk){
   const t=document.getElementById(`pd-ev-t-${dk}`).value.trim();
   const d=document.getElementById(`pd-ev-d-${dk}`).value.trim();if(!d)return;
   getEventsForDate(dk).push({id:`e${nextId++}`,time:t||'',desc:d,done:false});
   document.getElementById(`pd-ev-t-${dk}`).value='';document.getElementById(`pd-ev-d-${dk}`).value='';
   document.getElementById(`pd-ev-add-btn-${dk}`).style.display='';document.getElementById(`pd-ev-add-row-${dk}`).style.display='none';
-  renderPlannerEvents(dk);if(dk===activeDtKey)renderDtEvents();
+  renderPlannerEvents(dk);if(dk===window.activeDtKey)renderDtEvents();window.triggerSave&&window.triggerSave();
 }
-function cancelPlannerEvAdd(dk){
-  document.getElementById(`pd-ev-add-btn-${dk}`).style.display='';document.getElementById(`pd-ev-add-row-${dk}`).style.display='none';
-  document.getElementById(`pd-ev-t-${dk}`).value='';document.getElementById(`pd-ev-d-${dk}`).value='';
-}
+function cancelPlannerEvAdd(dk){document.getElementById(`pd-ev-add-btn-${dk}`).style.display='';document.getElementById(`pd-ev-add-row-${dk}`).style.display='none';document.getElementById(`pd-ev-t-${dk}`).value='';document.getElementById(`pd-ev-d-${dk}`).value='';}
+
 function renderPlannerEvents(dk){
   const container=document.getElementById(`pd-ev-${dk}`);if(!container)return;
   container.innerHTML='';
@@ -627,31 +766,25 @@ function renderPlannerEvents(dk){
   if(events.length===0){container.innerHTML='<div class="pd-empty">no events</div>';return;}
   events.forEach((ev,ei)=>{
     const row=document.createElement('div');row.className='pd-event-item';
-    const pcb=document.createElement('div');
-    pcb.style.cssText='width:10px;height:10px;border-radius:2px;border:1.5px solid var(--g5);background:white;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s;';
-    if(ev.done){pcb.style.background='var(--g3)';pcb.style.borderColor='var(--g3)';}
-    pcb.onclick=()=>{ev.done=!ev.done;renderPlannerEvents(dk);if(dk===activeDtKey)renderDtEvents();};
+    const pcb=document.createElement('div');pcb.className='pd-ev-cb'+(ev.done?' checked':'');
+    pcb.onclick=()=>{ev.done=!ev.done;renderPlannerEvents(dk);if(dk===window.activeDtKey)renderDtEvents();window.triggerSave&&window.triggerSave();};
     const tl=document.createElement('span');tl.className='pd-event-time-lbl';tl.textContent=ev.time||'·';
-    const dl=document.createElement('span');dl.className='pd-event-desc';dl.textContent=ev.desc;dl.title=ev.desc;
-    if(ev.done)dl.style.textDecoration='line-through';
+    const dl=document.createElement('span');dl.className='pd-event-desc'+(ev.done?' done-ev':'');dl.textContent=ev.desc;dl.title=ev.desc;
     const rm=document.createElement('button');rm.className='pd-ev-rm';rm.textContent='×';
-    rm.onclick=()=>{events.splice(ei,1);renderPlannerEvents(dk);if(dk===activeDtKey)renderDtEvents();};
+    rm.onclick=()=>{events.splice(ei,1);renderPlannerEvents(dk);if(dk===window.activeDtKey)renderDtEvents();window.triggerSave&&window.triggerSave();};
     row.appendChild(pcb);row.appendChild(tl);row.appendChild(dl);row.appendChild(rm);container.appendChild(row);
   });
 }
 function syncPlannerEvents(dk){renderPlannerEvents(dk);}
 
-// Planner tasks
 function addPlannerTask(dk){
   const inp=document.getElementById(`pd-add-inp-${dk}`);const val=inp.value.trim();if(!val)return;
   getTasksForDate(dk).push({id:`t${nextId++}`,label:val,done:false});inp.value='';
   document.getElementById(`pd-add-btn-${dk}`).style.display='';document.getElementById(`pd-add-row-${dk}`).style.display='none';
-  renderPlannerTasks(dk);if(dk===activeDtKey)renderDtTasks();
+  renderPlannerTasks(dk);if(dk===window.activeDtKey)renderDtTasks();window.triggerSave&&window.triggerSave();
 }
-function cancelPlannerAdd(dk){
-  document.getElementById(`pd-add-btn-${dk}`).style.display='';document.getElementById(`pd-add-row-${dk}`).style.display='none';
-  document.getElementById(`pd-add-inp-${dk}`).value='';
-}
+function cancelPlannerAdd(dk){document.getElementById(`pd-add-btn-${dk}`).style.display='';document.getElementById(`pd-add-row-${dk}`).style.display='none';document.getElementById(`pd-add-inp-${dk}`).value='';}
+
 function renderPlannerTasks(dk){
   const container=document.getElementById(`pd-tasks-${dk}`);if(!container)return;
   container.innerHTML='';
@@ -662,18 +795,19 @@ function renderPlannerTasks(dk){
     const cb=document.createElement('div');cb.className='pd-cb'+(task.done?' checked':'');
     const inp=document.createElement('input');inp.className='pd-task-inp'+(task.done?' done-txt':'');inp.value=task.label;inp.placeholder='task…';
     const rm=document.createElement('button');rm.className='pd-rm';rm.textContent='×';
-    cb.onclick=()=>{task.done=!task.done;cb.classList.toggle('checked',task.done);inp.classList.toggle('done-txt',task.done);updatePlannerPct(dk);if(dk===activeDtKey){updateDonut();syncDtTaskRow(ti,'done',task.done);}};
-    inp.addEventListener('input',e=>{task.label=e.target.value;if(dk===activeDtKey)syncDtTaskRow(ti,'label',e.target.value);});
-    rm.onclick=()=>{tasks.splice(ti,1);renderPlannerTasks(dk);updatePlannerPct(dk);if(dk===activeDtKey){renderDtTasks();updateDonut();}};
+    cb.onclick=()=>{task.done=!task.done;cb.classList.toggle('checked',task.done);inp.classList.toggle('done-txt',task.done);updatePlannerPct(dk);if(dk===window.activeDtKey){updateDonut();syncDtTaskRow(ti,'done',task.done);}window.triggerSave&&window.triggerSave();};
+    inp.addEventListener('input',e=>{task.label=e.target.value;if(dk===window.activeDtKey)syncDtTaskRow(ti,'label',e.target.value);window.triggerSave&&window.triggerSave();});
+    rm.onclick=()=>{tasks.splice(ti,1);renderPlannerTasks(dk);updatePlannerPct(dk);if(dk===window.activeDtKey){renderDtTasks();updateDonut();}window.triggerSave&&window.triggerSave();};
     row.appendChild(cb);row.appendChild(inp);row.appendChild(rm);container.appendChild(row);
   });
   updatePlannerPct(dk);
 }
+
 function updatePlannerPct(dk){
   const tasks=getTasksForDate(dk);const done=tasks.filter(t=>t.done).length,total=tasks.length;const pct=total?Math.round(done/total*100):0;
   const el=document.getElementById(`pdpct-${dk}`);const bar=document.getElementById(`pdbar-${dk}`);const foot=document.getElementById(`pdfooter-${dk}`);
   if(el)el.textContent=pct+'%';if(bar)bar.style.width=pct+'%';if(foot)foot.textContent=pct.toFixed(1)+'%';
-  if(dk===activeDtKey)updateDonut();
+  if(dk===window.activeDtKey)updateDonut();
 }
 function syncPlannerTaskCell(dk,ti,field,val){
   const col=document.getElementById(`pcol-${dk}`);if(!col)return;
@@ -687,73 +821,14 @@ function syncDtTaskRow(ti,field,val){
 }
 
 function refreshAll(){
-  updateWeekLabel();document.getElementById('wk-select').value=currentWeek;
+  updateWeekLabel();
+  const sel=document.getElementById('wk-select');if(sel)sel.value=window.currentWeek;
   buildDayPicker();buildPlannerGrid();
 }
-window.addEventListener('scroll',()=>{
-  let cur='';['daytracker','tracker'].forEach(id=>{const el=document.getElementById(id);if(el&&window.scrollY>=el.offsetTop-80)cur=id;});
-  document.querySelectorAll('.nav-link').forEach(l=>l.classList.toggle('active',l.getAttribute('href')==='#'+cur));
-});
-
-// EXPORT
-document.getElementById('export-btn').onclick=()=>{
-  saveState(); // make sure latest is in state first
-  const data={
-    exportedAt: new Date().toISOString(),
-    version: 'mytracker-v1',
-    state, currentYear, currentWeek, activeDtKey
-  };
-  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  const dateStr=new Date().toISOString().slice(0,10);
-  a.href=url; a.download=`my-tracker-backup-${dateStr}.json`;
-  a.click(); URL.revokeObjectURL(url);
-  showToast('⬇ Backup exported!');
-};
-
-// IMPORT
-document.getElementById('import-input').onchange=e=>{
-  const file=e.target.files[0]; if(!file) return;
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    try{
-      const data=JSON.parse(ev.target.result);
-      if(!data.state) throw new Error('Invalid file');
-      state=data.state;
-      if(!state.tasks)state.tasks={};
-      if(!state.events)state.events={};
-      if(!state.focus)state.focus={};
-      if(data.currentYear) currentYear=data.currentYear;
-      if(data.currentWeek) currentWeek=data.currentWeek;
-      if(data.activeDtKey) activeDtKey=data.activeDtKey;
-      saveState();
-      buildWeekSelect();
-      refreshAll();
-      showToast('⬆ Backup imported!');
-    }catch(err){
-      showToast('❌ Invalid backup file');
-    }
-    e.target.value=''; // reset so same file can be re-imported
-  };
-  reader.readAsText(file);
-};
-
-function showToast(msg){
-  const toast=document.getElementById('save-toast');
-  toast.textContent=msg; toast.classList.add('show');
-  setTimeout(()=>toast.classList.remove('show'),2500);
-}
-
-// Patch save btn to use showToast too
-document.getElementById('save-btn').onclick=()=>{
-  saveState();
-  const btn=document.getElementById('save-btn');btn.textContent='✅ Saved!';
-  showToast('✅ Progress saved!');
-  setTimeout(()=>btn.textContent='💾 Save',2000);
-};
-
-loadState();buildWeekSelect();refreshAll();
+window.refreshAll=refreshAll;
+window.buildWeekSelect=buildWeekSelect;
+window.changeWeek=changeWeek;
+window.goToToday=goToToday;
 </script>
 </body>
 </html>
