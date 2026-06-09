@@ -71,9 +71,11 @@ async function loadFromFirebase() {
         if (!window.appState.events) window.appState.events = {};
         if (!window.appState.focus) window.appState.focus = {};
       }
-      if (data.currentYear) window.currentYear = data.currentYear;
-      if (data.currentWeek) window.currentWeek = data.currentWeek;
-      if (data.activeDtKey) window.activeDtKey = data.activeDtKey;
+      // Always open on current week/today — ignore saved week position
+      const now = new Date(); now.setHours(0,0,0,0);
+      window.currentYear = window.getISOYear(now);
+      window.currentWeek = window.getISOWeek(now);
+      window.activeDtKey = window.dateKey(now);
     }
   } catch(e) {
     console.log('Load error:', e);
@@ -179,15 +181,15 @@ window.showToast = showToast;
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 :root{
-  /* Navy/blue palette */
-  --n1:#1a2744;   /* darkest navy */
-  --n2:#1e3160;   /* nav/header navy */
-  --n3:#2a4080;   /* medium navy */
-  --n4:#3a5499;   /* lighter navy */
-  --n5:#5a74b8;   /* accent blue */
-  --n6:#8fa4d4;   /* muted blue */
-  --n7:#c8d5ee;   /* light blue */
-  --n8:#eef1f9;   /* near-white blue */
+  /* Xero-style blue palette */
+  --n1:#0d47a1;   /* deep Xero blue */
+  --n2:#1565c0;   /* primary blue */
+  --n3:#1976d2;   /* medium blue */
+  --n4:#2196f3;   /* lighter blue */
+  --n5:#64b5f6;   /* accent blue */
+  --n6:#90caf9;   /* muted blue */
+  --n7:#bbdefb;   /* light blue */
+  --n8:#e3f2fd;   /* near-white blue */
   /* Gold palette */
   --gold:#c8973a;
   --gold-lt:#e8b85a;
@@ -196,11 +198,11 @@ window.showToast = showToast;
   /* Neutrals */
   --white:#fff;
   --dark:#111827;
-  --mid:#4a5a7a;
-  --muted:#7a8aaa;
-  --light:#b0bcd8;
-  --shadow:0 2px 16px rgba(26,39,68,.12);
-  --shadow-lg:0 4px 32px rgba(26,39,68,.18);
+  --mid:#37526e;
+  --muted:#6b8099;
+  --light:#aac4dc;
+  --shadow:0 2px 16px rgba(13,71,161,.10);
+  --shadow-lg:0 4px 32px rgba(13,71,161,.16);
 }
 html{scroll-behavior:smooth;}
 body{font-family:'DM Sans',sans-serif;background:var(--n8);color:var(--dark);min-height:100vh;font-size:15px;font-weight:400;}
@@ -229,10 +231,13 @@ body{font-family:'DM Sans',sans-serif;background:var(--n8);color:var(--dark);min
 #app-screen{display:none;}
 nav{
   position:sticky;top:0;z-index:100;
-  background:var(--n1);
-  display:flex;align-items:center;justify-content:space-between;
-  padding:0 16px;height:56px;
-  box-shadow:0 2px 16px rgba(0,0,0,.3);
+  background:var(--n2);
+  box-shadow:0 2px 16px rgba(0,0,0,.2);
+  border-bottom:2px solid var(--gold);
+}
+.nav-inner{
+  max-width:1200px;margin:0 auto;padding:0 16px;
+  height:56px;display:flex;align-items:center;justify-content:space-between;
 }
 .nav-brand{font-family:'DM Serif Display',serif;font-size:20px;color:var(--white);letter-spacing:.01em;}
 .nav-brand span{color:var(--gold);font-style:italic;}
@@ -258,9 +263,12 @@ nav{
 
 /* ── WEEK BAR ── */
 .week-bar{
-  background:var(--n2);padding:10px 16px;
+  background:var(--n1);
+  border-bottom:3px solid var(--gold);
+}
+.week-bar-inner{
+  max-width:1200px;margin:0 auto;padding:10px 16px;
   display:flex;align-items:center;gap:8px;flex-wrap:wrap;
-  border-bottom:2px solid var(--gold);
 }
 .week-bar-label{font-size:11px;font-weight:800;color:var(--gold);letter-spacing:.1em;text-transform:uppercase;}
 .wk-select{
@@ -553,25 +561,29 @@ footer strong{color:var(--gold);}
 <!-- APP SCREEN -->
 <div id="app-screen">
 <nav>
-  <div class="nav-brand">My <span>Tracker</span></div>
-  <div class="nav-right">
-    <span class="user-badge" id="user-email"></span>
-    <button class="nav-btn gold" onclick="manualSave()">💾 Save</button>
-    <button class="nav-btn" onclick="exportBackup()">⬇</button>
-    <label class="nav-btn" style="cursor:pointer;">⬆<input type="file" accept=".json" onchange="importBackup(event)" style="display:none"/></label>
-    <button class="nav-btn" onclick="doSignOut()">Out</button>
+  <div class="nav-inner">
+    <div class="nav-brand">My <span>Tracker</span></div>
+    <div class="nav-right">
+      <span class="user-badge" id="user-email"></span>
+      <button class="nav-btn gold" onclick="manualSave()">💾 Save</button>
+      <button class="nav-btn" onclick="exportBackup()">⬇</button>
+      <label class="nav-btn" style="cursor:pointer;">⬆<input type="file" accept=".json" onchange="importBackup(event)" style="display:none"/></label>
+      <button class="nav-btn" onclick="doSignOut()">Out</button>
+    </div>
   </div>
 </nav>
 
 <div class="week-bar">
-  <span class="week-bar-label">Week</span>
-  <select class="wk-select" id="wk-select"></select>
-  <div style="display:flex;gap:4px;">
-    <button class="wk-nav-btn" onclick="changeWeek(-1)">◀</button>
-    <button class="wk-nav-btn" onclick="changeWeek(1)">▶</button>
+  <div class="week-bar-inner">
+    <span class="week-bar-label">Week</span>
+    <select class="wk-select" id="wk-select"></select>
+    <div style="display:flex;gap:4px;">
+      <button class="wk-nav-btn" onclick="changeWeek(-1)">◀</button>
+      <button class="wk-nav-btn" onclick="changeWeek(1)">▶</button>
+    </div>
+    <span class="wk-dates" id="wk-dates"></span>
+    <button class="wk-today-btn" onclick="goToToday()">Today</button>
   </div>
-  <span class="wk-dates" id="wk-dates"></span>
-  <button class="wk-today-btn" onclick="goToToday()">Today</button>
 </div>
 
 <div class="save-toast" id="save-toast"></div>
@@ -685,6 +697,11 @@ function dateKey(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart
 function isToday(d){return d.toDateString()===todayDate.toDateString();}
 function getWeekDays(yr,wk){const mon=getMondayOfWeek(yr,wk);return Array.from({length:7},(_,i)=>{const d=new Date(mon);d.setDate(mon.getDate()+i);return d;});}
 function getNextWeek(yr,wk){let wk2=wk+1;let yr2=yr;const max=getISOWeek(new Date(yr,11,28));if(wk2>max){yr2++;wk2=1;}return{yr2,wk2};}
+
+// Expose helpers so Firebase module can call them
+window.getISOWeek=getISOWeek;
+window.getISOYear=getISOYear;
+window.dateKey=dateKey;
 
 let nextId=1000;
 // Always start on current week
